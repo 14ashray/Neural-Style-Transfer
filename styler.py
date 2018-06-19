@@ -48,30 +48,22 @@ class Neural_sytler:
         print('Model loaded...')
 
         print('\tComputing losses...')
-        # get the symbolic outputs of each "key" layer (we gave them unique names).
         outputs_dict = dict([(layer.name, layer.output) for layer in self.model.layers])
 
-        # extract features only from the content layer
         content_features = outputs_dict[self.content_layer]
 
-        # extract the activations of the base image and the output image
         base_image_features = content_features[0, :, :, :] 	# 0 corresponds to base
         combination_features = content_features[2, :, :, :]  # 2 coresponds to output
 
-        # calculate the feature reconstruction loss
         content_loss = self.content_weight * \
                 feature_reconstruction_loss(base_image_features,
                                             combination_features)
 
-        # for each style layer compute style loss
-        # total style loss is then weighted sum of those losses
         temp_style_loss = K.variable(0.0)
         weight = 1.0 / float(len(self.style_layers))
 
         for layer in self.style_layers:
-            # extract features of given layer
             style_features = outputs_dict[layer]
-            # from those features, extract style and output activations
             style_image_features = style_features[1, :, :, :]
             output_style_features = style_features[2, :, :, :]
             temp_style_loss += weight * \
@@ -81,15 +73,12 @@ class Neural_sytler:
                                               self.img_ncols)
         style_loss = self.style_weight * temp_style_loss
 
-        # compute total variational loss
         tv_loss = self.tv_weight * total_variation_loss(self.output_img,
                                                             self.img_nrows,
                                                             self.img_ncols)
 
-        # composite loss
         total_loss = content_loss + style_loss + tv_loss
 
-        # compute gradients of output img with respect to loss
         print('\tComputing gradients...')
         grads = K.gradients(total_loss, self.output_img)
 
@@ -99,7 +88,6 @@ class Neural_sytler:
         else:
             outputs.append(grads)
 
-        # [3]
         self.loss_and_grads = K.function([self.output_img], outputs)
 
     def style(self):
@@ -107,9 +95,7 @@ class Neural_sytler:
             Run L-BFGS over the pixels of the generated image so as to
             minimize the neural style loss.
             """
-        print('\nDone initializing... Ready to style!')
 
-        # initialize white noise image
         if K.image_dim_ordering() == 'th':
             x = np.random.uniform(0, 255, (1, 3, self.img_nrows, self.img_ncols)) - 128.
         else:
@@ -121,7 +107,6 @@ class Neural_sytler:
             toc = time.time()
             x, min_val, info = fmin_l_bfgs_b(self.loss, x.flatten(), fprime=self.grads, maxfun=20)
 
-            # save current generated image
             img = deprocess_image(x.copy(), self.img_nrows, self.img_ncols)
             fname = self.output_img_path + '_at_iteration_%d.png' % (i+1)
             imsave(fname, img)
@@ -132,7 +117,6 @@ class Neural_sytler:
             print('\t\tLoss: {:.2e}, Time: {} seconds'.format(float(min_val), float(tic-toc)))
 
     def loss(self, x):
-        # reshape
         if K.image_dim_ordering() == 'th':
             x = x.reshape((1, 3, self.img_nrows, self.img_ncols))
         else:
@@ -143,7 +127,6 @@ class Neural_sytler:
         return loss_value
 
     def grads(self, x):
-        # reshape
         if K.image_dim_ordering() == 'th':
             x = x.reshape((1, 3, self.img_nrows, self.img_ncols))
         else:
