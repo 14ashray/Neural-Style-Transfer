@@ -1,63 +1,94 @@
-import keras
+from __future__ import print_function
+
+import time
 import numpy as np
-from keras.applications import vgg19
-from keras.preprocessing.image import load_img
+from scipy.misc import imsave
+from keras import backend as K
 from scipy.optimize import fmin_l_bfgs_b
-from losses import content_loss, style_loss, variation_loss
-from utils import preprocess_img, decompress_img
+from keras.applications import vgg16, vgg19
+from keras.preprocessing.image import load_img
+from utils import preprocess_image, deprocess_image
+from losses import style_reconstruction_loss, feature_reconstruction_loss, total_variation_loss
 
 
-class Neural_sytler:
+class Neural_Styler(object):
+    def __init__(self,
+                 base_img_path,
+                 style_img_path,
+                 output_img_path,
+                 output_width,
+                 convnet,
+                 content_weight,
+                 style_weight,
+                 tv_weight,
+                 content_layer,
+                 style_layers,
+                 iterations):
 
-    def __init__(self, content_img_path, style_img_path, output_img_path, output_width, content_weight, style_weight, tv_weight, content_layer, style_layers, iterations):
-
-        self.content_img_path = content_img_path
+        self.base_img_path = base_img_path
         self.style_img_path = style_img_path
         self.output_img_path = output_img_path
 
-        print('\n\tResizing images...')
         self.width = output_width
-        width, height = load_img(self.content_img_path).size
+        width, height = load_img(self.base_img_path).size
         new_dims = (height, width)
+
         self.img_nrows = height
         self.img_ncols = width
 
         if self.width is not None:
             num_rows = int(np.floor(float(height * self.width / width)))
             new_dims = (num_rows, self.width)
+
             self.img_nrows = num_rows
             self.img_ncols = self.width
 
-        self.content_img = K.variable(preprocess_image(self.content_img_path, new_dims))
+        self.content_img = K.variable(preprocess_image(self.base_img_path, new_dims))
         self.style_img = K.variable(preprocess_image(self.style_img_path, new_dims))
-        self.combination_img = K.placeholder((1, new_dims[0], new_dims[1], 3))
+
+        if K.image_dim_ordering() == 'th':
+            self.output_img = K.placeholder((1, 3, new_dims[0], new_dims[1]))
+        else:
+            self.output_img = K.placeholder((1, new_dims[0], new_dims[1], 3))
 
         print("\tSize of content image is: {}".format(K.int_shape(self.content_img)))
         print("\tSize of style image is: {}".format(K.int_shape(self.style_img)))
         print("\tSize of output image is: {}".format(K.int_shape(self.output_img)))
 
-        self.input_img = K.concatenate([self.content_img, self.style_img, self.output_img], axis=0)
+        self.input_img = K.concatenate([self.content_img,
+                                        self.style_img,
+                                        self.output_img], axis=0)
+
+        self.convnet = convnet
         self.iterations = iterations
+
         self.content_weight = content_weight
         self.style_weight = style_weight
         self.tv_weight = tv_weight
+
         self.content_layer = content_layer
         self.style_layers = style_layers
 
-        self.model = vgg19.VGG19(input_tensor=self.input_img, weights='imagenet', include_top=False)
-        print('Model loaded...')
+        print('\tLoading {} model'.format(self.convnet.upper()))
 
-        print('\tComputing losses...')
+        if self.convnet == 'vgg16':
+            self.model = vgg16.VGG16(input_tensor=self.input_img,
+                                     weights='imagenet',
+                                     include_top=False)
+        else:
+            self.model = vgg19.VGG19(input_tensor=self.input_img,
+                                     weights='imagenet',
+                                     include_top=False)
+
         outputs_dict = dict([(layer.name, layer.output) for layer in self.model.layers])
-
         content_features = outputs_dict[self.content_layer]
 
-        base_image_features = content_features[0, :, :, :] 	# 0 corresponds to base
-        combination_features = content_features[2, :, :, :]  # 2 coresponds to output
+        base_image_features = content_features[0, :, :, :]
+        combination_features = content_features[2, :, :, :]
 
         content_loss = self.content_weight * \
-                feature_reconstruction_loss(base_image_features,
-                                            combination_features)
+            feature_reconstruction_loss(base_image_features,
+                                        combination_features)
 
         temp_style_loss = K.variable(0.0)
         weight = 1.0 / float(len(self.style_layers))
@@ -67,15 +98,15 @@ class Neural_sytler:
             style_image_features = style_features[1, :, :, :]
             output_style_features = style_features[2, :, :, :]
             temp_style_loss += weight * \
-                    style_reconstruction_loss(style_image_features,
-                                              output_style_features,
-                                              self.img_nrows,
-                                              self.img_ncols)
+                style_reconstruction_loss(style_image_features,
+                                          output_style_features,
+                                          self.img_nrows,
+                                          self.img_ncols)
         style_loss = self.style_weight * temp_style_loss
 
         tv_loss = self.tv_weight * total_variation_loss(self.output_img,
-                                                            self.img_nrows,
-                                                            self.img_ncols)
+                                                        self.img_nrows,
+                                                        self.img_ncols)
 
         total_loss = content_loss + style_loss + tv_loss
 
@@ -91,15 +122,7 @@ class Neural_sytler:
         self.loss_and_grads = K.function([self.output_img], outputs)
 
     def style(self):
-            """
-            Run L-BFGS over the pixels of the generated image so as to
-            minimize the neural style loss.
-            """
-
-        if K.image_dim_ordering() == 'th':
-            x = np.random.uniform(0, 255, (1, 3, self.img_nrows, self.img_ncols)) - 128.
-        else:
-            x = np.random.uniform(0, 255, (1, self.img_nrows, self.img_ncols, 3)) - 128.
+        x = np.random.uniform(0, 255, (1, self.img_nrows, self.img_ncols, 3)) - 128.
 
         for i in range(self.iterations):
             print('\n\tIteration: {}'.format(i+1))
@@ -117,20 +140,14 @@ class Neural_sytler:
             print('\t\tLoss: {:.2e}, Time: {} seconds'.format(float(min_val), float(tic-toc)))
 
     def loss(self, x):
-        if K.image_dim_ordering() == 'th':
-            x = x.reshape((1, 3, self.img_nrows, self.img_ncols))
-        else:
-            x = x.reshape((1, self.img_nrows, self.img_ncols, 3))
+        x = x.reshape((1, self.img_nrows, self.img_ncols, 3))
 
         outs = self.loss_and_grads([x])
         loss_value = outs[0]
         return loss_value
 
     def grads(self, x):
-        if K.image_dim_ordering() == 'th':
-            x = x.reshape((1, 3, self.img_nrows, self.img_ncols))
-        else:
-            x = x.reshape((1, self.img_nrows, self.img_ncols, 3))
+        x = x.reshape((1, self.img_nrows, self.img_ncols, 3))
 
         outs = self.loss_and_grads([x])
 
